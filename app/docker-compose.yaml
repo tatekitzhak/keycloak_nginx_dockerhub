@@ -1,7 +1,9 @@
 services:
   keycloak_admin_console:
     container_name: keycloak_container
-    image: ranitzahak/keycloak-admin-console:latest
+    build:
+      context: ./keycloak
+    # image: quay.io/keycloak/keycloak:20.0.0
     
     command: start-dev 
     environment:
@@ -20,7 +22,8 @@ services:
 
   nginx_keycloak:
     container_name: nginx_kc_container
-    image: ranitzahak/keycloak-nginx-proxy:latest
+    build:
+      context: ./nginx
     ports:
       - "8080:80"
     depends_on:
