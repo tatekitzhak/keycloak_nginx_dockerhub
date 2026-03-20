@@ -1,0 +1,243 @@
+name: manualy-deploy-docker-img-from-docker-hub # 3
+
+on:
+#   workflow_run:
+#     workflows: ["Build-AWS-Infrastructure-with-Terraform"]
+#     types: [completed]
+
+  workflow_dispatch:   
+  
+jobs:
+    fetch_aws_ec2_instance_id:
+      name: Extract EC2 instance ID for JSON file
+      runs-on: ubuntu-latest
+      # if: github.event_name == 'workflow_dispatch'
+     
+      permissions:
+        id-token: write    # Required for AWS OIDC
+        contents: read     # Required to checkout code
+        actions: read      # Required to download artifacts from other runs
+      env:
+        AWS_REGION: ${{ secrets.AWS_REGION }}
+        # EC2_INSTANCE_ID: ${{ needs.build_aws_infrastructure_with_terraform.outputs.instance_id }}
+
+      steps:
+        - name: Checkout Repository Code
+          uses: actions/checkout@v4
+
+        - name: Get Latest Workflow Run ID
+          env:
+            GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          run: |
+            RUN_ID=$(gh run list --workflow "Build-AWS-Infrastructure-with-Terraform" --status success --limit 1 --json databaseId --jq '.[0].databaseId')
+  
+            # Check if RUN_ID is empty or "null"
+            if [ -z "$RUN_ID" ] || [ "$RUN_ID" == "null" ]; then
+              echo "::error::No successful runs of 'Build-AWS-Infrastructure-with-Terraform' found. Please run Build-AWS-Infrastructure-with-Terraform first."
+              exit 1
+            fi
+  
+            echo "LATEST_RUN_ID=$RUN_ID" >> $GITHUB_ENV
+            echo "Found Run ID; $RUN_ID"
+        
+
+        - name: Download artifact
+          uses: actions/github-script@v8
+          with:
+            script: |
+              console.log('process.env.LATEST_RUN_ID:', process.env.LATEST_RUN_ID)
+              const run_id = Number(process.env.LATEST_RUN_ID);
+
+              let allArtifacts = await github.rest.actions.listWorkflowRunArtifacts({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: run_id,
+              });
+
+              console.log('allArtifacts: ',allArtifacts)
+
+
+              let matchArtifact = allArtifacts.data.artifacts.filter((artifact) => {
+                return artifact.name == "ec2_instance.json"
+              })[0];
+
+              console.log('matchArtifact: ',matchArtifact)
+
+              let downloadArtifact = await github.rest.actions.downloadArtifact({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                artifact_id: matchArtifact.id,
+                archive_format: 'zip',
+              });
+
+              console.log('downloadArtifact: ',downloadArtifact)
+        
+              let fs = require('fs');
+              fs.writeFileSync(`${process.env.GITHUB_WORKSPACE}/ec2_instance.zip`, Buffer.from(downloadArtifact.data));
+
+        - name: Unzip artifact
+          run: |
+            pwd
+            ls 
+            unzip -o ec2_instance.zip
+
+        - name: Return parsed JSON
+          uses: actions/github-script@v8
+          id: return_parsed_json
+          with:
+            script: |
+              let fs = require('fs');
+              let data = fs.readFileSync('./tf_enviournments/ec2_instance.json', 'utf8');
+              return JSON.parse(data);
+
+      outputs:
+        EC2_INSTANCE_ID: ${{ fromJSON(steps.return_parsed_json.outputs.result).ec2_instance_id }} 
+        # AWS_REGION: ${{ fromJSON(steps.return_parsed_json.outputs.result).aws_region }}
+
+    deploy-docker-image-from-docker-hub-to-AWS-EC2:
+        name: Deploy Keycloak Stack to AWS EC2 via SSM
+        needs:
+            - fetch_aws_ec2_instance_id
+            # - build-and-push # Ensure images are in Docker Hub before deploying
+        runs-on: ubuntu-latest
+        
+        permissions:
+            id-token: write   
+            contents: read   
+            issues: write
+            pull-requests: write
+        
+        env:
+            AWS_REGION: ${{ secrets.AWS_REGION }}
+            EC2_INSTANCE_ID: ${{ needs.fetch_aws_ec2_instance_id.outputs.EC2_INSTANCE_ID }}
+            DOCKER_USER: ${{ secrets.DOCKER_USERNAME }}
+            DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+        
+        steps:
+            - name: Checkout Repository
+              uses: actions/checkout@v4
+        
+            - name: Configure AWS Credentials via OIDC
+              uses: aws-actions/configure-aws-credentials@v4
+              with:
+                role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+                aws-region: ${{ env.AWS_REGION }}
+        
+            - name: Deploy via SSM (Docker Compose logic)
+              run: |
+                    set -e
+                    
+                    # We define the commands to run on the EC2 instance
+                    # We use docker-compose to manage the multi-container stack
+                    COMMANDS_JSON=$(jq -n \
+                    --arg u "$DOCKER_USER" \
+                    --arg p "$DOCKER_PASSWORD" \
+                    '{commands: [
+                        "docker login -u \($u) -p \($p)",
+                        "mkdir -p ~/keycloak-app",
+                        "cd ~/keycloak-app",
+                        # We create the docker-compose file on the server using a heredoc
+                        "cat <<EOF > docker-compose.yml
+                                    services:
+                                    keycloak_admin_console:
+                                        image: \($u)/keycloak-admin-console:latest
+                                        command: start-dev
+                                        environment:
+                                        KEYCLOAK_ADMIN: admin
+                                        KEYCLOAK_ADMIN_PASSWORD: admin
+                                        KC_PROXY: edge
+                                        KC_HOSTNAME_STRICT: \"false\"
+                                        KC_HTTP_ENABLED: true
+                                        KC_HOSTNAME_ADMIN_URL: http://localhost:8080
+                                        KC_HOSTNAME_URL: http://localhost:8080
+                                        networks:
+                                        - keycloak_net
+                            
+                                    nginx_keycloak:
+                                        image: \($u)/keycloak-nginx-proxy:latest
+                                        ports:
+                                        - \"8080:80\"
+                                        depends_on:
+                                        - keycloak_admin_console
+                                        networks:
+                                        - keycloak_net
+                            
+                                    networks:
+                                    keycloak_net:
+                                        driver: bridge
+                                    EOF",
+                                        "docker-compose pull",
+                                        "docker-compose up -d --remove-orphans",
+                                        "docker image prune -f"
+                                    ]}')
+            
+                    CMD_ID=$(aws ssm send-command \
+                    --document-name "AWS-RunShellScript" \
+                    --instance-ids "$EC2_INSTANCE_ID" \
+                    --parameters "$COMMANDS_JSON" \
+                    --comment "Deploying Multi-Container Stack via SSM" \
+                    --output text --query "Command.CommandId")
+            
+                    echo "Command ID: $CMD_ID"
+            
+                    # Polling for success
+                    for i in $(seq 1 36); do
+                    STATUS=$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$EC2_INSTANCE_ID" --query "Status" --output text 2>/dev/null || echo "Pending")
+                    echo "Current Deployment Status: $STATUS"
+                    if [ "$STATUS" = "Success" ]; then
+                        echo "Deployment successful!"
+                        break
+                    elif [ "$STATUS" = "Failed" ] || [ "$STATUS" = "TimedOut" ] || [ "$STATUS" = "Cancelled" ]; then
+                        echo "Deployment failed with status: $STATUS"
+                        aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$EC2_INSTANCE_ID"
+                        exit 1
+                    fi
+                    sleep 10
+                    done
+
+
+    # terraform_destroy:
+    #   name: Terraform Destroy
+    #   runs-on: ubuntu-latest
+    #   needs: [ fetch_aws_ec2_instance_id, deploy-docker-image-from-docker-hub ]
+
+    #   permissions:
+    #     id-token: write # Required for requesting the JWT
+    #     contents: read  # Required for actions/checkout
+
+    #   steps:
+    #     - run: echo "All CI jobs completed successfully."
+
+    #     - name: Checkout Code
+    #       uses: actions/checkout@v4
+        
+    #     - name: Download artifact
+    #       uses: actions/download-artifact@v6
+    #       with:
+    #         # name: ec2_instance.json 
+    #         # run-id: ${{ github.event.workflow_run.id }}
+    #         github-token: ${{ secrets.GITHUB_TOKEN }}
+    #         path: . # Or your build directory
+      
+    #     - name: Check files artifact downloaded from ec2_instance.json
+    #       run: | 
+    #           echo "Final 2-artifact-build-data Status:"
+    #           pwd
+    #           ls -R
+
+    #     - name: Configure AWS Credentials
+    #       uses: aws-actions/configure-aws-credentials@v4
+    #       with:
+    #         role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+    #         aws-region: ${{ secrets.AWS_REGION }}
+
+    #     - name: Setup Terraform
+    #       uses: hashicorp/setup-terraform@v3
+    #       with:
+    #         terraform_version: "1.7.0" # Or your preferred version
+
+    #     - name: Terraform Init
+    #       run: terraform init
+
+    #     - name: Terraform Destroy 
+    #       run: terraform destroy -auto-approve
