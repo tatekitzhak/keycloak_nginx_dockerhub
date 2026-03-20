@@ -126,25 +126,23 @@ jobs:
               run: |
                   set -e
                   
-                  # Constructing the commands to send to EC2
-                  # Note the double-escaping for the ports to survive the JQ -> SSM -> Bash journey
-                  COMMANDS_JSON=$(jq -n \
+                  COMPOSE_CONTENT="services:
+                                    hello-world-app:
+                                      image: hello-world
+                                      container_name: hello_container
+                                    nginx-webserver:
+                                      image: nginx:latest
+                                      container_name: nginx_container
+                                      ports:
+                                        - \\\"8080:80\\\""
+                            
+                  COMMANDS_JSON=$(jq -n --arg conf "$COMPOSE_CONTENT" \
                   '{commands: [
                       "mkdir -p ~/test-app",
                       "cd ~/test-app",
-                      "echo \"services:
-                    hello-world-app:
-                      image: hello-world
-                      container_name: hello_container
-      
-                    nginx-webserver:
-                      image: nginx:latest
-                      container_name: nginx_container
-                      ports:
-                        - \\\"8080:80\\\"\" > docker-compose.yml",
+                      "echo \"\($conf)\" > docker-compose.yml",
                       "docker-compose pull",
                       "docker-compose up -d --remove-orphans",
-                      "echo '--- Deployment Status ---'",
                       "docker ps -a"
                   ]}')
       
@@ -157,20 +155,20 @@ jobs:
       
                   echo "Command ID: $CMD_ID"
       
-                  # Wait for the command to finish
-                    for i in $(seq 1 36); do
+                  # Simple Polling Loop
+                  for i in $(seq 1 36); do
                     STATUS=$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$EC2_INSTANCE_ID" --query "Status" --output text 2>/dev/null || echo "Pending")
-                    echo "Test status: $STATUS"
+                    echo "Deploy status: $STATUS"
                     
                     [ "$STATUS" = "Success" ] && break
-                    [[ "$STATUS" == "Failed" || "$STATUS" == "TimedOut" || "$STATUS" == "Cancelled" ]] && aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$EC2_INSTANCE_ID" && exit 1
+                    [[ "$STATUS" == "Failed" || "$STATUS" == "TimedOut" || "$STATUS" == "Cancelled" ]] && \
+                      aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$EC2_INSTANCE_ID" && exit 1
                     
                     sleep 10
-                    done
-
-                    echo "--- EC2 Output Results ---"
-                    aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$EC2_INSTANCE_ID" --query "StandardOutputContent" --output text
-
+                  done
+      
+                  echo "--- EC2 Output Results ---"
+                  aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$EC2_INSTANCE_ID" --query "StandardOutputContent" --output text
     # terraform_destroy:
     #   name: Terraform Destroy
     #   runs-on: ubuntu-latest
