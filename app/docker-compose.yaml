@@ -1,0 +1,33 @@
+services:
+  keycloak_admin_console:
+    container_name: keycloak_container
+    image: ranitzahak/keycloak-admin-console:latest
+    
+    command: start-dev 
+    environment:
+      # Admin Credentials
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+
+      # Proxy & Networking
+      KC_PROXY: edge
+      KC_HOSTNAME_STRICT: "false"
+      KC_HTTP_ENABLED: true
+      KC_HOSTNAME_ADMIN_URL: http://localhost:8080
+      KC_HOSTNAME_URL: http://localhost:8080
+    networks:
+      - keycloak_nginx_dev_network
+
+  nginx_keycloak:
+    container_name: nginx_kc_container
+    image: ranitzahak/keycloak-nginx-proxy:latest
+    ports:
+      - "8080:80"
+    depends_on:
+      - keycloak_admin_console
+    networks:
+      - keycloak_nginx_dev_network
+
+networks:
+  keycloak_nginx_dev_network:
+    driver: bridge

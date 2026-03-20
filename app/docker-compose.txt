@@ -1,0 +1,56 @@
+services:
+  keycloak_demo:
+    image: quay.io/keycloak/keycloak:20.0.0
+    command: start-dev
+    environment:
+      KC_DB: postgres
+      KC_DB_URL_HOST: postgres_keycloak_demo
+      KC_DB_URL_DATABASE: keycloak
+      KC_DB_PASSWORD: password
+      KC_DB_USERNAME: keycloak
+      KC_DB_SCHEMA: public
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_PROXY: edge
+      KC_HOSTNAME_ADMIN_URL: https://localhost:8443
+      KC_HOSTNAME_URL: https://localhost:8443
+    depends_on:
+      postgres_keycloak_demo:
+        condition: service_healthy
+    networks:
+      - keycloak_nginx_dev_network
+
+  postgres_keycloak_demo:
+    image: postgres:14.2
+    command: postgres -c 'max_connections=200'
+    volumes:
+      - pgdata_keycloak_nginx_demo:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: password
+    healthcheck:
+      # test: "exit 0"
+      test: ["CMD-SHELL", "pg_isready -U keycloak"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "5436:5432"
+    networks:
+      - keycloak_nginx_dev_network
+  keycloak-nginx:
+    build: .
+    ports:
+      - "8080:80"
+      - "8443:443"
+    depends_on:
+      - keycloak_demo
+    networks:
+      - keycloak_nginx_dev_network
+
+volumes:
+  pgdata_keycloak_nginx_demo:
+networks:
+  keycloak_nginx_dev_network:
+    driver: bridge

@@ -1,0 +1,63 @@
+#### Tutor
+# https://dorokhovich.com/blog/keycloak-nginx-cluster
+# https://www.youtube.com/watch?v=Kv3hhuyrpXg
+####
+
+events { worker_connections 1024; }
+
+http {
+  # If in Docker, 127.0.0.11 is the embedded DNS. Otherwise, point to your resolver.
+  resolver 127.0.0.11 valid=30s ipv6=off;
+
+  upstream keycloak_http {
+    zone keycloak_http 64k;
+    ip_hash;                      # Simple sticky sessions
+    server keycloak-1:8080 max_fails=3 fail_timeout=10s;
+    server keycloak-2:8080 max_fails=3 fail_timeout=10s;
+  }
+
+  server {
+    listen 80;
+    server_name _;
+    return 301 https://$host$request_uri;
+  }
+
+  server {
+    listen 443 ssl http2;
+    server_name _;
+
+    ssl_certificate     /etc/nginx/certs/tls.crt;
+    ssl_certificate_key /etc/nginx/certs/tls.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+
+    # Health probe (passive): Nginx will mark a peer failed on errors/timeouts.
+    location = /health {
+      proxy_pass http://keycloak_http/realms/master/health;
+      proxy_set_header Host $host;
+    }
+
+    location / {
+      proxy_pass http://keycloak_http;
+      proxy_http_version 1.1;
+
+      # Forwarded headers for modern Keycloak
+      proxy_set_header Host              $host;
+      proxy_set_header X-Real-IP         $remote_addr;
+      proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+      proxy_set_header X-Forwarded-Host  $host;
+      proxy_set_header X-Forwarded-Port  $server_port;
+
+      # Upgrade support (WebSockets, admin console live features)
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection $connection_upgrade;
+
+      # Buffers and timeouts — tune for your traffic profile
+      proxy_connect_timeout 5s;
+      proxy_read_timeout 60s;
+      proxy_send_timeout 60s;
+      proxy_buffering on;
+    }
+  }
+}
