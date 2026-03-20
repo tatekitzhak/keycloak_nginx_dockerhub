@@ -11,9 +11,9 @@ jobs:
       matrix:
         include:
           - image_name: keycloak-admin-console
-            context: ./keycloak
+            context: ./app/keycloak
           - image_name: keycloak-nginx-proxy
-            context: ./nginx
+            context: ./app/nginx
     
     steps:
       - name: Checkout Repository
