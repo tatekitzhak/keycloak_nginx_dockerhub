@@ -138,20 +138,20 @@ jobs:
                       ports:
                         - \"8080:80\""
           
-                  # 2. Encode it to a single line of Base64
+                  # 2. Base64 encode
                   B64_COMPOSE=$(echo "$COMPOSE_YAML" | base64 -w 0)
           
-                  # 3. Create the JSON for SSM
+                  # 3. Create JSON for SSM using absolute path /home/ubuntu/
                   COMMANDS_JSON=$(jq -n --arg b64 "$B64_COMPOSE" \
                   '{commands: [
-                      "mkdir -p ~/test-app",
-                      "cd ~/test-app",
-                      "echo \($b64) | base64 -d > docker-compose.yml",
-                      "echo \"--- File Content Verification ---\"",
-                      "cat docker-compose.yml",
-                      "sudo docker-compose pull",
-                      "sudo docker-compose up -d --remove-orphans",
-                      "sleep 5",
+                      "mkdir -p /home/ubuntu/test-app",
+                      "echo \($b64) | base64 -d > /home/ubuntu/test-app/docker-compose.yml",
+                      "echo \"--- Verifying File Location ---\"",
+                      "ls -l /home/ubuntu/test-app/docker-compose.yml",
+                      "echo \"--- Starting Docker Compose ---\"",
+                      "sudo docker-compose -f /home/ubuntu/test-app/docker-compose.yml up -d --remove-orphans",
+                      "sleep 2",
+                      "echo \"--- Status Check ---\"",
                       "sudo docker ps -a"
                   ]}')
           
