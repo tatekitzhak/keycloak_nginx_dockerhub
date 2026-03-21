@@ -126,39 +126,29 @@ jobs:
               run: |
                   set -e
                   echo "--- EC2_INSTANCE_ID ---: $EC2_INSTANCE_ID "
-                  COMPOSE_CONTENT="services:
-                    hello-world-app:
-                      image: hello-world
-                      container_name: hello_container
-                    nginx-webserver:
-                      image: nginx:latest
-                      container_name: nginx_container
-                      ports:
-                        - \"8080:80\""
-          
-                  # Pass the content into jq safely
-                  # Note: we use --arg to handle the string exactly as written
+                  COMPOSE_CONTENT="services:\n  hello-world-app:\n    image: hello-world\n    container_name: hello_container\n  nginx-webserver:\n    image: nginx:latest\n    container_name: nginx_container\n    ports:\n      - \"8080:80\""
+
                   COMMANDS_JSON=$(jq -n --arg conf "$COMPOSE_CONTENT" \
                   '{commands: [
                       "mkdir -p ~/test-app",
                       "cd ~/test-app",
-                      "printf \"%s\" \"\($conf)\" > docker-compose.yml",
-                      "docker-compose pull",
-                      "docker-compose up -d --remove-orphans",
-                      "sleep 2",
-                      "echo \"--- Final Container List ---\"",
-                      "docker ps -a --format \"table {{.Names}}\t{{.Status}}\t{{.Ports}}\""
+                      "printf \"$conf\" > docker-compose.yml",
+                      "echo \"--- Content of docker-compose.yml ---\"",
+                      "cat docker-compose.yml",
+                      "echo \"--- Running Docker Compose ---\"",
+                      "sudo docker-compose pull",
+                      "sudo docker-compose up -d --remove-orphans",
+                      "sleep 5",
+                      "echo \"--- Container List (With Sudo) ---\"",
+                      "sudo docker ps -a"
                   ]}')
           
                   CMD_ID=$(aws ssm send-command \
                     --document-name "AWS-RunShellScript" \
                     --instance-ids "$EC2_INSTANCE_ID" \
                     --parameters "$COMMANDS_JSON" \
-                    --comment "Testing Docker Compose via SSM" \
                     --output text --query "Command.CommandId")
-          
-                  echo "Command ID: $CMD_ID"
-          
+                    
                   # Polling Loop
                   for i in $(seq 1 36); do
                     STATUS=$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$EC2_INSTANCE_ID" --query "Status" --output text 2>/dev/null || echo "Pending")
