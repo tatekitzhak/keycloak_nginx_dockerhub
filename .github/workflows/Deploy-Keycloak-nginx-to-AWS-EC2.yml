@@ -127,16 +127,37 @@ jobs:
                   set -e
                   echo "--- EC2_INSTANCE_ID ---: $EC2_INSTANCE_ID "
                   
-                  # 1. Define the YAML clearly
+                  # 0. Get the Public IP of the EC2 instance dynamically
+                  PUBLIC_IP=$(aws ec2 describe-instances --instance-ids "$EC2_INSTANCE_ID" --query "Reservations[0].Instances[0].PublicIpAddress" --output text)
+                  echo "Deploying to: http://$PUBLIC_IP:8080"
+          
+                  # 1. Define the actual Keycloak + Nginx YAML
                   COMPOSE_YAML="services:
-                    hello-world-app:
-                      image: hello-world
-                      container_name: hello_container
-                    nginx-webserver:
-                      image: nginx:latest
-                      container_name: nginx_container
+                    keycloak_admin_console:
+                      image: $DOCKER_USER/keycloak-admin-console:latest
+                      command: start-dev
+                      environment:
+                        KEYCLOAK_ADMIN: admin
+                        KEYCLOAK_ADMIN_PASSWORD: admin
+                        KC_PROXY: edge
+                        KC_HOSTNAME_STRICT: \"false\"
+                        KC_HTTP_ENABLED: true
+                        # Use the Public IP here instead of localhost
+                        KC_HOSTNAME_ADMIN_URL: http://$PUBLIC_IP:8080
+                        KC_HOSTNAME_URL: http://$PUBLIC_IP:8080
+                      networks:
+                        - keycloak_net
+                    nginx_keycloak:
+                      image: $DOCKER_USER/keycloak-nginx-proxy:latest
                       ports:
-                        - \"8080:80\""
+                        - \"8080:80\"
+                      depends_on:
+                        - keycloak_admin_console
+                      networks:
+                        - keycloak_net
+                  networks:
+                    keycloak_net:
+                      driver: bridge"
           
                   # 2. Base64 encode
                   B64_COMPOSE=$(echo "$COMPOSE_YAML" | base64 -w 0)
